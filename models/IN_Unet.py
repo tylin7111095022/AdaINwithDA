@@ -12,9 +12,9 @@ class InstanceNormalization_UNet(nn.Module):
         self.n_classes = n_classes
         self.bilinear = bilinear
         self.is_cls = is_cls
+        self.is_styleLoss = True
 
-        # self.style_fs = []
-        # self.mse_loss = nn.MSELoss()
+        self.mse_loss = nn.MSELoss() # calculate style loss
 
         self.encoder = Encoder(n_channels, n_layers=4)
         self.decoder = Decoder(n_classes=n_classes,n_layers=4,bilinear=bilinear,is_cls=is_cls)
@@ -25,14 +25,24 @@ class InstanceNormalization_UNet(nn.Module):
         style_code = self.encoder(style)
         style_fs = self.encoder.features
 
-        align_encoder_f = []
+        align_encoder_fs = []
         for (source_f, style_f) in zip(source_fs,style_fs):
-            align_encoder_f.append(adain(content_feat=source_f,style_feat=style_f))
+            align_encoder_fs.append(adain(content_feat=source_f,style_feat=style_f))
 
         code = adain(content_feat=code,style_feat=style_code)
-        logits = self.decoder(code, align_encoder_f)
+        logits = self.decoder(code, align_encoder_fs)
 
-        return logits
+        decoder_fs = self.decoder.features
+
+        styleloss = 0
+        if self.is_styleLoss:
+            assert len(align_encoder_fs) == len(decoder_fs)
+            for i in range(len(decoder_fs)):
+                ef = align_encoder_fs[i]
+                df = decoder_fs[-(i+1)]
+                styleloss += self.calc_style_loss(ef.detach(),df) # style loss 只用來更新decoder的參數 所以經過adaIN校正過的向量需要detach
+
+        return logits, styleloss
     
     def targetDomainPredict(self, x):
         code = self.encoder(x)
@@ -40,15 +50,18 @@ class InstanceNormalization_UNet(nn.Module):
         logits = self.decoder(code, fs)
 
         return logits
-
     
-    # def calc_style_loss(self, feature, style_feature):
-    #     assert (feature.size() == style_feature.size())
-    #     assert (style_feature.requires_grad is False)
-    #     input_mean, input_std = calc_mean_std(feature)
-    #     target_mean, target_std = calc_mean_std(style_feature)
-    #     return self.mse_loss(input_mean, target_mean) + \
-    #            self.mse_loss(input_std, target_std)
+    def calc_style_loss(self, feature, style_feature):
+        # assert (feature.size() == style_feature.size())
+        # assert (style_feature.requires_grad is False)
+        input_mean, input_std = calc_mean_std(feature)
+        target_mean, target_std = calc_mean_std(style_feature)
+
+        return self.mse_loss(input_mean, target_mean) + \
+               self.mse_loss(input_std, target_std)
+    
+    def set_styleloss(self, flag:bool):
+        self.is_styleLoss = flag
     
 class Encoder(nn.Module):
     def __init__(self, n_channels, n_layers):
@@ -76,15 +89,16 @@ class Decoder(nn.Module):
         self.n_layers = n_layers
         self.is_cls = is_cls
         self.layers = nn.ModuleList([Up(64*(2**(i+1)),64*(2**i),bilinear) for i in range(n_layers-1,-1,-1)])
+        self.features = []
         if is_cls:
             self.outc = OutConv(64, n_classes)
         
     def forward(self, x, encoder_fs):
         assert len(encoder_fs) == self.n_layers
+        self.features = []
         for i,layer in enumerate(self.layers):
-            # print(x.shape)
-            # print(encoder_fs[-(i+1)].shape)
             x = layer(x,encoder_fs[-(i+1)])
+            self.features.append(x)
         if self.is_cls:
             x = self.outc(x)
 
@@ -188,7 +202,7 @@ def cross_entropy_2d(predict, target):
     loss = F.cross_entropy(predict, target, size_average=True)
     return loss
 
-def calc_mean_std(feat, eps=1e-5):
+def calc_mean_std(feat, eps=1e-7):
     # eps is a small value added to the variance to avoid divide-by-zero.
     size = feat.size()
     assert (len(size) == 4)

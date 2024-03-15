@@ -21,7 +21,7 @@ def get_models(model_name:str, is_cls:bool, args):
 
 if __name__ == '__main__':
 
-    student = InstanceNormalization_UNet(n_channels=1, n_classes=2,is_proj=True, is_cls=True)
+    student = InstanceNormalization_UNet(n_channels=1, n_classes=2, is_cls=True)
     teacher = InstanceNormalization_UNet(n_channels=1, n_classes=2,is_proj=False, is_cls=True)
     load_path = r'weight\in\data10000\bestmodel.pth'
     student_name = { param[0]:param[1].data.detach() for param in student.named_parameters()}

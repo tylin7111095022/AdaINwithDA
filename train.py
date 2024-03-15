@@ -17,7 +17,7 @@ dir_content = r'data\real_A' #訓練集的圖片所在路徑 榮總圖片
 dir_truth = r'data\train_mask' #訓練集的真實label所在路徑
 dir_style = r'data\fake_B' 
 
-dir_checkpoint = r'log\train1_adain_onlyCE' #儲存模型的權重檔所在路徑
+dir_checkpoint = r'log\train2_adain_CEandSL' #儲存模型的權重檔所在路徑
 # load_path = r'weights\in\data10000\bestmodel.pth'
 
 os.makedirs(dir_checkpoint,exist_ok=False)
@@ -115,10 +115,11 @@ def training(net,
     # loss_fn.set_metric(args.loss)
     loss_fn = CrossEntropyLoss()
     #begin to train model
-    epoch_losses = []
+    epoch_losses = {"superviseLoss":[], "styleLoss": []}
     for i in range(1, args.total_epoch+1):
         net.train()
-        epoch_loss = 0
+        sup_loss = 0
+        style_loss = 0
         # adjust the learning rate
         lr = cosine_decay_with_warmup(current_iter=i,total_iter=args.total_epoch,warmup_iter=args.warmup_epoch,base_lr=args.init_lr)
         adjust_lr(optimizer,lr)
@@ -128,22 +129,29 @@ def training(net,
             imgs = imgs.to(dtype=torch.float32, device = device)
             truthes = truthes.to(device = device)
             style_imgs = style_imgs.to(dtype=torch.float32, device = device)
-            logits = net(imgs,style_imgs)
+            logits, styleloss = net(imgs,style_imgs)
 
-            loss = loss_fn(logits, truthes.squeeze(1)) # truthes 去掉通道軸
-            epoch_loss += loss.item()
+            superviseloss = loss_fn(logits, truthes.squeeze(1)) # truthes 去掉通道軸
+            sup_loss += superviseloss.item()
+            style_loss += styleloss.item()
+            total_loss = superviseloss + styleloss
             optimizer.zero_grad()
-            loss.backward()
+            total_loss.backward()
             optimizer.step()
 
-        logging.info(f'Training loss: {epoch_loss:6.4f} at epoch {i}.')
-        epoch_losses.append(epoch_loss)
+        logging.info(f'total loss: {(sup_loss+style_loss):6.4f}, supervise loss: {sup_loss:6.4f}, style loss: {style_loss:6.4f} at epoch {i}.')
+        epoch_losses["superviseLoss"].append(sup_loss)
+        epoch_losses["styleLoss"].append(style_loss)
 
         if (save_checkpoint) :
             torch.save(net.state_dict(), os.path.join(dir_checkpoint,f'unet_{i}.pth'))
             logging.info(f'Model saved at epoch {i}.')
-        
-    min_loss_at = torch.argmin(torch.tensor(epoch_losses)).item() + 1 
+
+    total_losses = torch.zeros(args.total_epoch)
+    for _,v in epoch_losses.items():
+        total_losses += torch.tensor(v)
+
+    min_loss_at = torch.argmin(total_losses).item() + 1 
     logging.info(f'min Training loss at epoch {min_loss_at}.')
             
     return
