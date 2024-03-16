@@ -23,9 +23,9 @@ def get_args():
     parser.add_argument('--model', type=str,default='in_unet',help='models, option: bn_unet, in_unet')
     parser.add_argument('--in_channel','-i',type=int, default=1,help="channels of input images")
     parser.add_argument('--classes','-c',type=int,default=2,help='Number of classes')
-    parser.add_argument('--weight', '-w', default=r'log\train1_adain_onlyCE\unet_42.pth', metavar='FILE',help='Specify the file in which the model is stored')
-    parser.add_argument('--imgpath', '-img',type=str,default=r'', help='the path of img')
-    parser.add_argument('--eval', action="store_true",default=True, help='calculate miou and dice score')
+    parser.add_argument('--weight', '-w', default=r'log\train2_adain_CEandSL\unet_43.pth', metavar='FILE',help='Specify the file in which the model is stored')
+    parser.add_argument('--imgpath', '-img',type=str,default=r'A185019_01-01_010218162732_11.png', help='the path of img')
+    parser.add_argument('--eval', action="store_true",default=False, help='calculate miou and dice score')
     
     return parser.parse_args()
 

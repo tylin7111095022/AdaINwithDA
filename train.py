@@ -17,7 +17,7 @@ dir_content = r'data\real_A' #訓練集的圖片所在路徑 榮總圖片
 dir_truth = r'data\train_mask' #訓練集的真實label所在路徑
 dir_style = r'data\fake_B' 
 
-dir_checkpoint = r'log\train2_adain_CEandSL' #儲存模型的權重檔所在路徑
+dir_checkpoint = r'log\train3_adain_CEandSL_no_normalize' #儲存模型的權重檔所在路徑
 # load_path = r'weights\in\data10000\bestmodel.pth'
 
 os.makedirs(dir_checkpoint,exist_ok=False)
@@ -31,8 +31,8 @@ def get_args():
     parser.add_argument('--classes','-c',type=int,default=2,help='Number of classes')
     parser.add_argument('--init_lr','-r',type = float, default=2e-2,help='initial learning rate of model')
     parser.add_argument('--device', type=str,default='cuda:0',help='training on cpu or gpu')
-    # parser.add_argument('--loss', type=str,default='dice_loss',help='loss metric, options: [kl_divergence, cross_entropy, dice_loss]')
-    parser.add_argument('--model', type=str,default='in_unet',help='models, option: bn_unet, in_unet')
+    parser.add_argument('--model', type=str,default='in_unet',help='models, option: in_unet')
+    parser.add_argument('--normalize', action="store_true",default=False, help='model normalize layer exist or not')
 
     return parser.parse_args()
 
@@ -56,7 +56,7 @@ def main():
     logger.addHandler(ch)
     logger.addHandler(fh)
     ###################################################
-    net = get_models(model_name=args.model, is_cls=True,args=args)
+    net = get_models(model_name=args.model,is_normalize=args.normalize, is_cls=True,args=args)
     
     # pretrained_model_param_dict = torch.load(load_path)
     # net.load_state_dict(pretrained_model_param_dict)

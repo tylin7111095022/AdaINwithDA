@@ -8,12 +8,10 @@ from .unet_model import UNet
 from .IN_Unet import InstanceNormalization_UNet
 import torch
 
-def get_models(model_name:str, is_cls:bool, args):
+def get_models(model_name:str, is_normalize:bool, is_cls:bool, args):
     """option: in_unet, bn_unet"""
     if model_name == "in_unet":
-        model = InstanceNormalization_UNet(n_channels=args.in_channel,n_classes=args.classes,is_cls=is_cls)
-    elif model_name == "bn_unet":
-        model = UNet(n_channels=args.in_channel,n_classes=args.classes,is_cls=is_cls)
+        model = InstanceNormalization_UNet(n_channels=args.in_channel,n_classes=args.classes,is_normalize=is_normalize,is_cls=is_cls)
     else:
         raise NotImplementedError(f"{model_name} has not implemented")
 

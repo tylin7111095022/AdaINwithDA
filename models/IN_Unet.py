@@ -6,18 +6,19 @@ import torch
 import torch.nn as nn
 
 class InstanceNormalization_UNet(nn.Module):
-    def __init__(self, n_channels, n_classes, bilinear=False, is_cls:bool=True):
+    def __init__(self, n_channels, n_classes, is_normalize:bool, bilinear=False, is_cls:bool=True):
         super(InstanceNormalization_UNet, self).__init__()
         self.n_channels = n_channels
         self.n_classes = n_classes
         self.bilinear = bilinear
         self.is_cls = is_cls
         self.is_styleLoss = True
+        self.is_normalize = is_normalize
 
         self.mse_loss = nn.MSELoss() # calculate style loss
 
-        self.encoder = Encoder(n_channels, n_layers=4)
-        self.decoder = Decoder(n_classes=n_classes,n_layers=4,bilinear=bilinear,is_cls=is_cls)
+        self.encoder = Encoder(n_channels, n_layers=4,is_normalize=is_normalize)
+        self.decoder = Decoder(n_classes=n_classes,n_layers=4,is_normalize=is_normalize,bilinear=bilinear,is_cls=is_cls)
 
     def forward(self, x, style):
         code = self.encoder(x)
@@ -64,11 +65,11 @@ class InstanceNormalization_UNet(nn.Module):
         self.is_styleLoss = flag
     
 class Encoder(nn.Module):
-    def __init__(self, n_channels, n_layers):
+    def __init__(self, n_channels, n_layers, is_normalize:bool):
         super(Encoder, self).__init__()
-        self.inc = DoubleConv(n_channels, 64)
+        self.inc = DoubleConv(n_channels, 64, is_normalize=is_normalize)
         self.n_layers = n_layers
-        self.layers = nn.ModuleList([Down(64*(2**i), 64*(2**(i+1))) for i in range(n_layers)])
+        self.layers = nn.ModuleList([Down(64*(2**i), 64*(2**(i+1)),is_normalize=is_normalize) for i in range(n_layers)])
         self.features = []
 
     def forward(self, x):
@@ -83,12 +84,12 @@ class Encoder(nn.Module):
         return x
     
 class Decoder(nn.Module):
-    def __init__(self, n_classes, n_layers, bilinear:bool=False, is_cls:bool=True):
+    def __init__(self, n_classes, n_layers, is_normalize:bool, bilinear:bool=False, is_cls:bool=True):
         super(Decoder, self).__init__()
         self.bilinear = bilinear
         self.n_layers = n_layers
         self.is_cls = is_cls
-        self.layers = nn.ModuleList([Up(64*(2**(i+1)),64*(2**i),bilinear) for i in range(n_layers-1,-1,-1)])
+        self.layers = nn.ModuleList([Up(64*(2**(i+1)),64*(2**i),is_normalize,bilinear) for i in range(n_layers-1,-1,-1)])
         self.features = []
         if is_cls:
             self.outc = OutConv(64, n_classes)
@@ -106,31 +107,39 @@ class Decoder(nn.Module):
 
 
 class DoubleConv(nn.Module):
-    """(convolution => [BN] => ReLU) * 2"""
+    """(convolution => [IN] => ReLU) * 2"""
 
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels, out_channels, is_normalize:bool=True):
         super().__init__()
-        self.double_conv = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
-            nn.InstanceNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-            nn.InstanceNorm2d(out_channels),
-            nn.ReLU(inplace=True)
-        )
+        self.is_normalize = is_normalize
+        if is_normalize:
+            double_conv = [
+                nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+                nn.InstanceNorm2d(out_channels),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+                nn.InstanceNorm2d(out_channels),
+                nn.ReLU(inplace=True)]
+        else:
+            double_conv = [
+                nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+                nn.ReLU(inplace=True)]
+            
+        self.double_conv = nn.Sequential(*double_conv)
 
     def forward(self, x):
         return self.double_conv(x)
 
-
 class Down(nn.Module):
     """Downscaling with maxpool then double conv"""
 
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels, out_channels, is_normalize:bool):
         super().__init__()
         self.maxpool_conv = nn.Sequential(
             nn.MaxPool2d(2),
-            DoubleConv(in_channels, out_channels)
+            DoubleConv(in_channels, out_channels, is_normalize=is_normalize)
         )
 
     def forward(self, x):
@@ -140,7 +149,7 @@ class Down(nn.Module):
 class Up(nn.Module):
     """Upscaling then double conv"""
 
-    def __init__(self, in_channels, out_channels, bilinear=True):
+    def __init__(self, in_channels, out_channels, is_normalize:bool, bilinear=True):
         super().__init__()
 
         # if bilinear, use the normal convolutions to reduce the number of channels
@@ -149,7 +158,7 @@ class Up(nn.Module):
         else:
             self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
 
-        self.conv = DoubleConv(in_channels, out_channels)
+        self.conv = DoubleConv(in_channels, out_channels, is_normalize=is_normalize)
 
     def forward(self, x1, x2):
         x1 = self.up(x1)
