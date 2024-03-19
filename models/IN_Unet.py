@@ -63,6 +63,11 @@ class InstanceNormalization_UNet(nn.Module):
     
     def set_styleloss(self, flag:bool):
         self.is_styleLoss = flag
+
+    def freeze_encoder(self, is_freeze:bool):
+        for name, p in self.encoder.named_parameters():
+            p.requires_grad = not is_freeze
+            # print(f"{name}: {p.requires_grad}")
     
 class Encoder(nn.Module):
     def __init__(self, n_channels, n_layers, is_normalize:bool):
@@ -234,9 +239,6 @@ def adain(content_feat, style_feat):
 
     
 if __name__ == '__main__':
-    net = InstanceNormalization_UNet(n_channels=3, n_classes=2)
-    print(net)
-    # for param in net.named_parameters():
-    #     # print(param[0])
-    #     print(param[1].data)
+    net = InstanceNormalization_UNet(n_channels=1, n_classes=2,is_normalize=True)
+    net.freeze_encoder(is_freeze=True)
     

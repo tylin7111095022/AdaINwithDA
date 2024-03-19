@@ -17,8 +17,7 @@ dir_content = r'data\real_A' #訓練集的圖片所在路徑 榮總圖片
 dir_truth = r'data\train_mask' #訓練集的真實label所在路徑
 dir_style = r'data\fake_B' 
 
-dir_checkpoint = r'log\train3_adain_CEandSL_no_normalize' #儲存模型的權重檔所在路徑
-# load_path = r'weights\in\data10000\bestmodel.pth'
+dir_checkpoint = r'log\train7_adain_CEandSL_fixencoder_pretrain' #儲存模型的權重檔所在路徑
 
 os.makedirs(dir_checkpoint,exist_ok=False)
 
@@ -31,15 +30,20 @@ def get_args():
     parser.add_argument('--classes','-c',type=int,default=2,help='Number of classes')
     parser.add_argument('--init_lr','-r',type = float, default=2e-2,help='initial learning rate of model')
     parser.add_argument('--device', type=str,default='cuda:0',help='training on cpu or gpu')
+    parser.add_argument('--pretrain_path', type=str,default=r'weights\in\data10000_100epoch\bestmodel.pth',help='pretrain weight')
     parser.add_argument('--model', type=str,default='in_unet',help='models, option: in_unet')
-    parser.add_argument('--normalize', action="store_true",default=False, help='model normalize layer exist or not')
+    parser.add_argument('--normalize', action="store_true",default=True, help='model normalize layer exist or not')
+    parser.add_argument('--styleloss', action="store_true",default=True, help='using style loss during training')
+    parser.add_argument('--fix_encoder', action="store_true",default=True, help='fix encoder')
+    parser.add_argument('--pair_style', action="store_true",default=True, help='if True then choose a paired style img using cyclegan, or random choose a style img from target domain')
+    parser.add_argument('--sup_loss_w',type = float, default=1.0,help='weight of supervise loss')
+    parser.add_argument('--style_loss_w',type = float, default=1.0,help='weight of style loss')
 
     return parser.parse_args()
 
 def main():
     args = get_args()
-    trainingDataset = AdainDataset(content_dir = dir_content, truth_dir=dir_truth,style_dir=dir_style)
-
+    trainingDataset = AdainDataset(content_dir = dir_content, truth_dir=dir_truth,style_dir=dir_style,pair_style=args.pair_style)
     #設置 log
     # ref: https://shengyu7697.github.io/python-logging/
     logger = logging.getLogger()
@@ -57,9 +61,12 @@ def main():
     logger.addHandler(fh)
     ###################################################
     net = get_models(model_name=args.model,is_normalize=args.normalize, is_cls=True,args=args)
+    net.freeze_encoder(is_freeze=args.fix_encoder)
     
-    # pretrained_model_param_dict = torch.load(load_path)
-    # net.load_state_dict(pretrained_model_param_dict)
+    if args.pretrain_path:
+        pretrained_model_param_dict = torch.load(args.pretrain_path)
+        net.load_state_dict(pretrained_model_param_dict)
+        print(f"pretrained model: {args.pretrain_path}")
     
     logging.info(net)
     
@@ -67,7 +74,7 @@ def main():
     ##紀錄訓練的一些參數配置
     logging.info(f'''
     =======================================
-    
+
     dir_content: {dir_content}
     dir_truth: {dir_truth}
     dir_style: {dir_style}
@@ -111,6 +118,7 @@ def training(net,
         Device:          {device.type}
     ''')
     net.to(device)
+    net.set_styleloss(args.styleloss)
     # loss_fn = Distribution_loss()
     # loss_fn.set_metric(args.loss)
     loss_fn = CrossEntropyLoss()
@@ -130,8 +138,11 @@ def training(net,
             truthes = truthes.to(device = device)
             style_imgs = style_imgs.to(dtype=torch.float32, device = device)
             logits, styleloss = net(imgs,style_imgs)
+            styleloss = args.style_loss_w * styleloss
 
             superviseloss = loss_fn(logits, truthes.squeeze(1)) # truthes 去掉通道軸
+            superviseloss = args.sup_loss_w * superviseloss
+
             sup_loss += superviseloss.item()
             style_loss += styleloss.item()
             total_loss = superviseloss + styleloss

@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 from torch.utils.data import Dataset
 from torchvision import transforms
+import random
 
 class CSDataset(Dataset):
     f'''
@@ -94,13 +95,15 @@ class GrayDataset(Dataset):
     
 class AdainDataset(Dataset):
     
-    def __init__(self,content_dir,truth_dir,style_dir,transform = None):
+    def __init__(self,content_dir,truth_dir,style_dir,transform = None, pair_style:bool = None):
         assert len(os.listdir(content_dir)) == len(os.listdir(style_dir)), "numbers of img and label dismatch."
         self.content_dir = content_dir
         self.style_dir = style_dir
         self.truth_dir = truth_dir
         self.img_list = [i for i in os.listdir(content_dir)]
+        self.style_list = [i for i in os.listdir(self.style_dir)]
         self.transforms = transform
+        self.pair_styleimg = pair_style
 
     def __getitem__(self, idx):
         img_name = self.img_list[idx]
@@ -111,7 +114,12 @@ class AdainDataset(Dataset):
         img = img.to(torch.float32) / 255 #[0, 255] -> [0, 1]
         imgsize = (img.shape[1], img.shape[2])
         # style image
-        style_path = os.path.join(self.style_dir, img_name)
+        if self.pair_styleimg:
+            style_path = os.path.join(self.style_dir, img_name)
+        else:
+            random_idx = random.randint(0,len(self.style_list)-1)
+            style_path = os.path.join(self.style_dir, self.style_list[random_idx])
+        
         style = cv2.imread(style_path,cv2.IMREAD_GRAYSCALE)
         if style.ndim == 2:
             style = np.expand_dims(style,2) #如果沒通道軸，加入通道軸 為了執行後面的cv2.threshold
@@ -144,8 +152,7 @@ class AdainDataset(Dataset):
         return len(self.img_list)
     
 if __name__ == "__main__":
-    # ds = STDataset(student_dir = r'data\real_B', teacher_dir= r'data\fake_A')
-    ds = AdainDataset(content_dir = r"data\real_A", truth_dir=r"data\train_mask",style_dir=r"data\fake_B")
+    ds = AdainDataset(content_dir = r"data\real_A", truth_dir=r"data\train_mask",style_dir=r"data\fake_B",pair_style=True)
     img, mask, style = ds[3]
     print(img.shape)
     print(mask.shape)

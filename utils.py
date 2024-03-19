@@ -9,18 +9,24 @@ class Plotter(object):
     def __init__(self):
         pass
 
-    def plot_entropy(self,prob, saved:bool=False, is_heat:bool=True):
+    def plot_entropy(self,prob, imgname=None, saved:bool=False, is_heat:bool=True):
         ent_map = self._prob2entropy(prob)
-        maps = (ent_map - torch.min(ent_map)) / (torch.max(ent_map) - torch.min(ent_map))*255
+        range_ent = (torch.max(ent_map) - torch.min(ent_map))
+        maps = ((ent_map - torch.min(ent_map)) / range_ent)*255
+        
         for m in range(maps.size(0)):
-            map = maps[m].to(torch.uint8).permute(1,2,0).numpy()
+            entmap = maps[m].to(torch.uint8).permute(1,2,0).numpy()
+            # print(np.unique(entmap))
             #黑白圖變熱圖
             if is_heat:
-                map = cv2.applyColorMap(map, cv2.COLORMAP_JET)
+                entmap = cv2.applyColorMap(entmap, cv2.COLORMAP_JET)
             if saved:
-                cv2.imwrite(f"entropy_map{m}.png",map)
+                if not imgname:
+                    cv2.imwrite(f"entropy_map{m}.png",entmap)
+                else:
+                    cv2.imwrite(f"entropyMap_{imgname}.png",entmap)
             else:
-                cv2.imshow(f"entropy map{m}", map)
+                cv2.imshow(f"entropy map{m}", entmap)
                 cv2.waitKey(0)
                 cv2.destroyAllWindows() 
         

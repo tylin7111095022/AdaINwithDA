@@ -12,7 +12,7 @@ import threading
 #custom
 from models import get_models
 from dataset import GrayDataset
-from metric import iou,compute_mIoU, dice_score
+from metric import compute_mIoU, dice_score
 from utils import Plotter
 
 test_img_dir = r"data\chang_val_1\images"
@@ -23,20 +23,22 @@ def get_args():
     parser.add_argument('--model', type=str,default='in_unet',help='models, option: bn_unet, in_unet')
     parser.add_argument('--in_channel','-i',type=int, default=1,help="channels of input images")
     parser.add_argument('--classes','-c',type=int,default=2,help='Number of classes')
-    parser.add_argument('--weight', '-w', default=r'log\train2_adain_CEandSL\unet_43.pth', metavar='FILE',help='Specify the file in which the model is stored')
-    parser.add_argument('--imgpath', '-img',type=str,default=r'A185019_01-01_010218162732_11.png', help='the path of img')
-    parser.add_argument('--eval', action="store_true",default=False, help='calculate miou and dice score')
+    parser.add_argument('--weight', '-w', default=r'log\train6_adain_CEandSL_fixencoder_nopretrain\unet_50.pth', metavar='FILE',help='Specify the file in which the model is stored')
+    parser.add_argument('--normalize', action="store_true",default=True, help='model normalize layer exist or not')
+    parser.add_argument('--imgpath', '-img',type=str,default=r'', help='the path of img')
+    parser.add_argument('--eval', action="store_true",default=True, help='calculate miou and dice score')
     
     return parser.parse_args()
 
 def predict_mask(net,imgpath:str):
     plotter = Plotter()
     net = net.to(device="cpu")
+    net.eval()
     img = torch.from_numpy(cv2.imread(imgpath,cv2.IMREAD_GRAYSCALE)).unsqueeze(2).permute(2,0,1)
     img = img.unsqueeze(0)#加入批次軸
     img = img.to(dtype=torch.float32, device='cpu')
     logit = net.targetDomainPredict(img)
-    plotter.plot_entropy(torch.softmax(logit, dim=1),saved=True,is_heat=True)
+    plotter.plot_entropy(torch.softmax(logit, dim=1),saved=True,is_heat=True, imgname=os.path.basename(imgpath).split(".")[0])
     mask_pred = torch.argmax(torch.softmax(logit, dim=1),dim=1,keepdim=True).to(torch.int32)
     mask_pred = mask_pred.squeeze().numpy()
     mask_pred = mask_pred.astype(np.uint8)*255
@@ -47,7 +49,7 @@ def predict_mask(net,imgpath:str):
 
 def evaluate_imgs(net,
                 testdataset,):
-    # net.eval() #miou 計算不用 eval mode 因為 running mean and running std 誤差可能在訓練過程紀錄的時候過大
+    net.eval() #miou 計算不用 eval mode 因為 running mean and running std 誤差可能在訓練過程紀錄的時候過大
     evaluation_dict = {}
     if not evaluation_dict.get("miou"):
         evaluation_dict["miou"] = []
@@ -78,7 +80,7 @@ def evaluate_imgs(net,
 if __name__ == '__main__':
     args = get_args()
     testset = GrayDataset(img_dir = test_img_dir, mask_dir = test_truth_dir)
-    net = get_models(model_name=args.model, is_cls=True,args=args)
+    net = get_models(model_name=args.model, is_cls=True,is_normalize=args.normalize, args=args)
 
 
     print(f'Loading model {args.weight}')
