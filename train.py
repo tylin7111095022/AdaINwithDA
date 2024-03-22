@@ -10,6 +10,7 @@ from torch.nn import CrossEntropyLoss
 
 #custom module
 from models import get_models
+from models.losses import Distribution_loss
 from dataset import AdainDataset
 from utils import adjust_lr, cosine_decay_with_warmup
 
@@ -17,7 +18,7 @@ dir_content = r'data\real_A' #訓練集的圖片所在路徑 榮總圖片
 dir_truth = r'data\train_mask' #訓練集的真實label所在路徑
 dir_style = r'data\fake_B' 
 
-dir_checkpoint = r'log\train7_adain_CEandSL_fixencoder_pretrain' #儲存模型的權重檔所在路徑
+dir_checkpoint = r'log\train11_adain_CEandSL_fixencoder_pretrain_ASL' #儲存模型的權重檔所在路徑
 
 os.makedirs(dir_checkpoint,exist_ok=False)
 
@@ -25,9 +26,10 @@ def get_args():
     parser = argparse.ArgumentParser(description = 'Train the UNet on images and target masks')
     parser.add_argument('--image_channel','-i',type=int, default=1,dest='in_channel',help="channels of input images")
     parser.add_argument('--total_epoch','-e',type=int,default=50,metavar='E',help='times of training model')
-    parser.add_argument('--warmup_epoch',type=int,default=0,help='warm up the student model')
+    parser.add_argument('--warmup_epoch',type=int,default=20,help='warm up the student model')
     parser.add_argument('--batch','-b',type=int,dest='batch_size',default=1, help='Batch size')
     parser.add_argument('--classes','-c',type=int,default=2,help='Number of classes')
+    parser.add_argument('--loss', type=str,default='asymmetric_loss',help='loss metric, options: [cross_entropy, asymmetric_loss]')
     parser.add_argument('--init_lr','-r',type = float, default=2e-2,help='initial learning rate of model')
     parser.add_argument('--device', type=str,default='cuda:0',help='training on cpu or gpu')
     parser.add_argument('--pretrain_path', type=str,default=r'weights\in\data10000_100epoch\bestmodel.pth',help='pretrain weight')
@@ -38,6 +40,9 @@ def get_args():
     parser.add_argument('--pair_style', action="store_true",default=True, help='if True then choose a paired style img using cyclegan, or random choose a style img from target domain')
     parser.add_argument('--sup_loss_w',type = float, default=1.0,help='weight of supervise loss')
     parser.add_argument('--style_loss_w',type = float, default=1.0,help='weight of style loss')
+    parser.add_argument('--gamma_neg',type = float, default=2.,help='ASL param, control loss of negative samples')
+    parser.add_argument('--gamma_pos',type = float, default=0.,help='ASL param, control loss of positive samples')
+    parser.add_argument('--clip',type = float, default=0.1,help='ASL param, control negative samples prob shift, between 0~1')
 
     return parser.parse_args()
 
@@ -112,16 +117,16 @@ def training(net,
         Epochs:          {args.total_epoch}
         warm up epoch:   {args.warmup_epoch}
         Batch size:      {args.batch_size}
-        Loss metirc:     crossentropy
+        Loss metirc:     {args.loss}
         Training size:   {len(dataset)}
         checkpoints:     {save_checkpoint}
         Device:          {device.type}
     ''')
     net.to(device)
     net.set_styleloss(args.styleloss)
-    # loss_fn = Distribution_loss()
-    # loss_fn.set_metric(args.loss)
-    loss_fn = CrossEntropyLoss()
+    loss_fn = Distribution_loss(args=args)
+    loss_fn.set_metric(args.loss)
+
     #begin to train model
     epoch_losses = {"superviseLoss":[], "styleLoss": []}
     for i in range(1, args.total_epoch+1):
@@ -140,7 +145,7 @@ def training(net,
             logits, styleloss = net(imgs,style_imgs)
             styleloss = args.style_loss_w * styleloss
 
-            superviseloss = loss_fn(logits, truthes.squeeze(1)) # truthes 去掉通道軸
+            superviseloss = loss_fn(logits, truthes)
             superviseloss = args.sup_loss_w * superviseloss
 
             sup_loss += superviseloss.item()
@@ -166,55 +171,6 @@ def training(net,
     logging.info(f'min Training loss at epoch {min_loss_at}.')
             
     return
-
-class Distribution_loss(torch.nn.Module):
-    """p is target distribution and q is predict distribution"""
-    def __init__(self):
-        super(Distribution_loss, self).__init__()
-        self.metric = self.set_metric()
-
-    def kl_divergence(self,p,q):
-        """p and q are both a logit(before softmax function)"""
-        prob_p = torch.softmax(p,dim=1)
-        kl = (prob_p * torch.log_softmax(p,dim=1)) - (prob_p * torch.log_softmax(q,dim=1))
-        # print(f"p*torch.log(p) is {torch.sum(p*torch.log(p))}")
-        # print(f"p*torch.log(q) is {torch.sum(p*torch.log(q))}")
-        # print(f"mean kl divergence: {torch.sum(kl) / (kl.shape[0]*kl.shape[-1]*kl.shape[-2])}")
-        return torch.sum(kl) / (kl.shape[0]*kl.shape[-1]*kl.shape[-2])
-
-    def cross_entropy(self,p,q):
-        """p and q are both a logit(before softmax function)""" 
-        ce = -torch.softmax(p, dim=1) * torch.log_softmax(q, dim=1)
-        # print(f"mean ce: {torch.sum(ce) / (ce.shape[0]*ce.shape[-1]*ce.shape[-2])}")
-        return torch.sum(ce) / (ce.shape[0]*ce.shape[-1]*ce.shape[-2])
-    
-    def dice_loss(self,p,q):
-        smooth = 1e-8
-        prob_p = torch.softmax(p,dim=1)
-        prob_q = torch.softmax(q,dim=1)
-
-        inter = torch.sum(prob_p*prob_q) + smooth
-        union = torch.sum(prob_p) + torch.sum(prob_q) + smooth
-        loss = 1 - ((2*inter) / union)
-        return  loss / p.size(0) # loss除以batch size
-
-    def forward(self,p,q):
-        assert p.dim() == 4, f"dimension of target distribution has to be 4, but get {p.dim()}"
-        assert p.dim() == q.dim(), f"dimension dismatch between p and q"
-        if self.metric == 'kl_divergence':
-            return self.kl_divergence(p,q)
-        elif self.metric == "cross_entropy":
-            return self.cross_entropy(p,q)
-        elif self.metric == "dice_loss":
-            return self.dice_loss(p,q)
-        else:
-            raise NotImplementedError("the loss metric has not implemented")
-        
-    def set_metric(self, metric:str="cross_entropy"):
-        if metric in ["kl_divergence", "cross_entropy", "dice_loss"]:
-            self.metric = metric
-        else:
-            raise NotImplementedError(f"the loss metric has not implemented. metric name must be in kl_divergence or cross_entropy")
 
 if __name__ == '__main__':
     main()

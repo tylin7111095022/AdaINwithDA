@@ -23,14 +23,42 @@ def get_args():
     parser.add_argument('--model', type=str,default='in_unet',help='models, option: bn_unet, in_unet')
     parser.add_argument('--in_channel','-i',type=int, default=1,help="channels of input images")
     parser.add_argument('--classes','-c',type=int,default=2,help='Number of classes')
-    parser.add_argument('--weight', '-w', default=r'log\train6_adain_CEandSL_fixencoder_nopretrain\unet_50.pth', metavar='FILE',help='Specify the file in which the model is stored')
+    parser.add_argument('--weight', '-w', default=r'log\train10_adain_CEandSL_fixencoder_pretrain_ASL\unet_50.pth', metavar='FILE',help='Specify the file in which the model is stored')
     parser.add_argument('--normalize', action="store_true",default=True, help='model normalize layer exist or not')
     parser.add_argument('--imgpath', '-img',type=str,default=r'', help='the path of img')
-    parser.add_argument('--eval', action="store_true",default=True, help='calculate miou and dice score')
+    parser.add_argument('--imgdir', type=str,default=r'testchromosome', help='the path of directory which imgs saved for predicting')
+    parser.add_argument('--outdir', type=str,default=r'testchromosome', help='directory where saved predict imgs')
+    parser.add_argument('--eval', action="store_true",default=False, help='calculate miou and dice score')
     
     return parser.parse_args()
 
-def predict_mask(net,imgpath:str):
+def main():
+    args = get_args()
+    testset = GrayDataset(img_dir = test_img_dir, mask_dir = test_truth_dir)
+    net = get_models(model_name=args.model, is_cls=True,is_normalize=args.normalize, args=args)
+
+    if not os.path.exists(args.outdir):
+        os.makedirs(args.outdir)
+
+    print(f'Loading model {args.weight}')
+    net.load_state_dict(torch.load(args.weight, map_location="cpu",))
+    print('Model loaded!')
+    # predict one images
+    if args.imgdir:
+        imgs = os.listdir(args.imgdir)
+        imgs = [os.path.join(args.imgdir,i)for i in imgs]
+        for i in imgs:
+            predict_mask(net=net,imgpath=i,plot_ent=False,outdir=args.outdir)
+    elif args.imgpath:
+        predict_mask(net=net,imgpath=args.imgpath,plot_ent=False)
+
+    # evaluate images
+    if args.eval:
+        performance = evaluate_imgs(net=net,testdataset=testset)
+        print(f'{performance}')
+
+
+def predict_mask(net,imgpath:str, plot_ent:bool, outdir:str = "./"):
     plotter = Plotter()
     net = net.to(device="cpu")
     net.eval()
@@ -38,12 +66,14 @@ def predict_mask(net,imgpath:str):
     img = img.unsqueeze(0)#加入批次軸
     img = img.to(dtype=torch.float32, device='cpu')
     logit = net.targetDomainPredict(img)
-    plotter.plot_entropy(torch.softmax(logit, dim=1),saved=True,is_heat=True, imgname=os.path.basename(imgpath).split(".")[0])
+    if plot_ent:
+        plotter.plot_entropy(torch.softmax(logit, dim=1),saved=True,is_heat=True, imgname=os.path.basename(imgpath).split(".")[0])
     mask_pred = torch.argmax(torch.softmax(logit, dim=1),dim=1,keepdim=True).to(torch.int32)
     mask_pred = mask_pred.squeeze().numpy()
     mask_pred = mask_pred.astype(np.uint8)*255
     im = Image.fromarray(mask_pred)
-    im.save(f"./predict_{os.path.basename(imgpath)}")
+    name = os.path.join(outdir,f"predict_{os.path.basename(imgpath)}")
+    im.save(name)
 
     return mask_pred
 
@@ -78,19 +108,4 @@ def evaluate_imgs(net,
     return evaluation_dict
 
 if __name__ == '__main__':
-    args = get_args()
-    testset = GrayDataset(img_dir = test_img_dir, mask_dir = test_truth_dir)
-    net = get_models(model_name=args.model, is_cls=True,is_normalize=args.normalize, args=args)
-
-
-    print(f'Loading model {args.weight}')
-    net.load_state_dict(torch.load(args.weight, map_location="cpu",))
-    print('Model loaded!')
-    # predict one images
-    if args.imgpath:
-        predict_mask(net=net,imgpath=args.imgpath)
-
-    # evaluate images
-    if args.eval:
-        performance = evaluate_imgs(net=net,testdataset=testset)
-        print(f'{performance}')
+    main()
