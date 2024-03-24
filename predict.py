@@ -23,19 +23,20 @@ def get_args():
     parser.add_argument('--model', type=str,default='in_unet',help='models, option: bn_unet, in_unet')
     parser.add_argument('--in_channel','-i',type=int, default=1,help="channels of input images")
     parser.add_argument('--classes','-c',type=int,default=2,help='Number of classes')
-    parser.add_argument('--weight', '-w', default=r'log\train10_adain_CEandSL_fixencoder_pretrain_ASL\unet_50.pth', metavar='FILE',help='Specify the file in which the model is stored')
-    parser.add_argument('--normalize', action="store_true",default=True, help='model normalize layer exist or not')
+    parser.add_argument('--weight', '-w', default=r'log\train15_adain_ASLandSL_crop\unet_29.pth', metavar='FILE',help='Specify the file in which the model is stored')
+    parser.add_argument('--normalize', action="store_true",dest="is_normalize",default=True, help='model normalize layer exist or not')
+    parser.add_argument('--pad_mode', action="store_true",default=False, help='unet used crop or pad at skip connection')
     parser.add_argument('--imgpath', '-img',type=str,default=r'', help='the path of img')
-    parser.add_argument('--imgdir', type=str,default=r'testchromosome', help='the path of directory which imgs saved for predicting')
+    parser.add_argument('--imgdir', type=str,default=r'', help='the path of directory which imgs saved for predicting')
     parser.add_argument('--outdir', type=str,default=r'testchromosome', help='directory where saved predict imgs')
-    parser.add_argument('--eval', action="store_true",default=False, help='calculate miou and dice score')
+    parser.add_argument('--eval', action="store_true",default=True, help='calculate miou and dice score')
     
     return parser.parse_args()
 
 def main():
     args = get_args()
     testset = GrayDataset(img_dir = test_img_dir, mask_dir = test_truth_dir)
-    net = get_models(model_name=args.model, is_cls=True,is_normalize=args.normalize, args=args)
+    net = get_models(model_name=args.model, is_cls=True, args=args)
 
     if not os.path.exists(args.outdir):
         os.makedirs(args.outdir)

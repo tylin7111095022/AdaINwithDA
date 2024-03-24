@@ -6,19 +6,21 @@ import torch
 import torch.nn as nn
 
 class InstanceNormalization_UNet(nn.Module):
-    def __init__(self, n_channels, n_classes, is_normalize:bool, bilinear=False, is_cls:bool=True):
+    def __init__(self, n_channels, n_classes, is_normalize:bool, bilinear=False, is_cls:bool=True,pad_mode:bool=True):
         super(InstanceNormalization_UNet, self).__init__()
         self.n_channels = n_channels
         self.n_classes = n_classes
         self.bilinear = bilinear
         self.is_cls = is_cls
+        self.pad_mode = pad_mode
         self.is_styleLoss = True
         self.is_normalize = is_normalize
+        self.dummy_param = nn.Parameter(torch.empty(0)) #check device is cuda or cpu
 
         self.mse_loss = nn.MSELoss() # calculate style loss
 
         self.encoder = Encoder(n_channels, n_layers=4,is_normalize=is_normalize)
-        self.decoder = Decoder(n_classes=n_classes,n_layers=4,is_normalize=is_normalize,bilinear=bilinear,is_cls=is_cls)
+        self.decoder = Decoder(n_classes=n_classes,n_layers=4,is_normalize=is_normalize,pad_mode=self.pad_mode,bilinear=bilinear,is_cls=is_cls)
 
     def forward(self, x, style):
         code = self.encoder(x)
@@ -26,16 +28,16 @@ class InstanceNormalization_UNet(nn.Module):
         style_code = self.encoder(style)
         style_fs = self.encoder.features
 
+        #在計算輸入圖片以及風格圖片的統計量時，如果圖片有無意義的邊界，如何校正統計量
         align_encoder_fs = []
         for (source_f, style_f) in zip(source_fs,style_fs):
             align_encoder_fs.append(adain(content_feat=source_f,style_feat=style_f))
 
         code = adain(content_feat=code,style_feat=style_code)
         logits = self.decoder(code, align_encoder_fs)
-
         decoder_fs = self.decoder.features
 
-        styleloss = 0
+        styleloss = torch.zeros(1).to(device=self.dummy_param.device)
         if self.is_styleLoss:
             assert len(align_encoder_fs) == len(decoder_fs)
             for i in range(len(decoder_fs)):
@@ -43,12 +45,21 @@ class InstanceNormalization_UNet(nn.Module):
                 df = decoder_fs[-(i+1)]
                 styleloss += self.calc_style_loss(ef.detach(),df) # style loss 只用來更新decoder的參數 所以經過adaIN校正過的向量需要detach
 
+        if not self.pad_mode:
+            diffY = torch.tensor([x.shape[2] - logits.size()[2]])
+            diffX = torch.tensor([x.shape[3] - logits.size()[3]])
+            logits = F.pad(logits, [diffX // 2, diffX - diffX // 2, diffY // 2, diffY - diffY // 2],mode="replicate")
+
         return logits, styleloss
     
     def targetDomainPredict(self, x):
         code = self.encoder(x)
         fs = self.encoder.features
         logits = self.decoder(code, fs)
+        if not self.pad_mode:
+            diffY = torch.tensor([x.shape[2] - logits.size()[2]])
+            diffX = torch.tensor([x.shape[3] - logits.size()[3]])
+            logits = F.pad(logits, [diffX // 2, diffX - diffX // 2, diffY // 2, diffY - diffY // 2],mode="replicate")
 
         return logits
     
@@ -89,12 +100,13 @@ class Encoder(nn.Module):
         return x
     
 class Decoder(nn.Module):
-    def __init__(self, n_classes, n_layers, is_normalize:bool, bilinear:bool=False, is_cls:bool=True):
+    def __init__(self, n_classes, n_layers, is_normalize:bool, pad_mode:bool=True, bilinear:bool=False, is_cls:bool=True):
         super(Decoder, self).__init__()
         self.bilinear = bilinear
         self.n_layers = n_layers
         self.is_cls = is_cls
-        self.layers = nn.ModuleList([Up(64*(2**(i+1)),64*(2**i),is_normalize,bilinear) for i in range(n_layers-1,-1,-1)])
+        self.pad_mode = pad_mode
+        self.layers = nn.ModuleList([Up(64*(2**(i+1)),64*(2**i),is_normalize,bilinear,pad_fmap=pad_mode) for i in range(n_layers-1,-1,-1)])
         self.features = []
         if is_cls:
             self.outc = OutConv(64, n_classes)
@@ -154,9 +166,9 @@ class Down(nn.Module):
 class Up(nn.Module):
     """Upscaling then double conv"""
 
-    def __init__(self, in_channels, out_channels, is_normalize:bool, bilinear=True):
+    def __init__(self, in_channels, out_channels, is_normalize:bool, bilinear=True,pad_fmap:bool=True):
         super().__init__()
-
+        self.pad_fmap = pad_fmap
         # if bilinear, use the normal convolutions to reduce the number of channels
         if bilinear:
             self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
@@ -170,9 +182,14 @@ class Up(nn.Module):
         # input is BCHW
         diffY = torch.tensor([x2.size()[2] - x1.size()[2]])
         diffX = torch.tensor([x2.size()[3] - x1.size()[3]])
-
-        x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2,
-                        diffY // 2, diffY - diffY // 2])
+        if self.pad_fmap:
+            x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2,
+                            diffY // 2, diffY - diffY // 2])
+        else:
+            # center crop to x2
+            x2_orig_y, x2_orig_x = x2.shape[2], x2.shape[3]
+            x2 = x2[:,:, (diffY//2):x2_orig_y-(diffY - diffY // 2), (diffX//2):x2_orig_x-(diffX - diffX // 2)]
+    
         # if you have padding issues, see
         # https://github.com/HaiyongJiang/U-Net-Pytorch-Unstructured-Buggy/commit/0e854509c2cea854e247a9c615f175f76fbb2e3a
         # https://github.com/xiaopeng-liao/Pytorch-UNet/commit/8ebac70e633bac59fc22bb5195e513d5832fb3bd

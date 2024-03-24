@@ -6,7 +6,6 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import warnings
 warnings.filterwarnings("ignore")
-from torch.nn import CrossEntropyLoss
 
 #custom module
 from models import get_models
@@ -18,7 +17,7 @@ dir_content = r'data\real_A' #訓練集的圖片所在路徑 榮總圖片
 dir_truth = r'data\train_mask' #訓練集的真實label所在路徑
 dir_style = r'data\fake_B' 
 
-dir_checkpoint = r'log\train11_adain_CEandSL_fixencoder_pretrain_ASL' #儲存模型的權重檔所在路徑
+dir_checkpoint = r'log\train15_adain_ASLandSL_crop' #儲存模型的權重檔所在路徑
 
 os.makedirs(dir_checkpoint,exist_ok=False)
 
@@ -26,17 +25,18 @@ def get_args():
     parser = argparse.ArgumentParser(description = 'Train the UNet on images and target masks')
     parser.add_argument('--image_channel','-i',type=int, default=1,dest='in_channel',help="channels of input images")
     parser.add_argument('--total_epoch','-e',type=int,default=50,metavar='E',help='times of training model')
-    parser.add_argument('--warmup_epoch',type=int,default=20,help='warm up the student model')
+    parser.add_argument('--warmup_epoch',type=int,default=0,help='warm up the student model')
     parser.add_argument('--batch','-b',type=int,dest='batch_size',default=1, help='Batch size')
     parser.add_argument('--classes','-c',type=int,default=2,help='Number of classes')
     parser.add_argument('--loss', type=str,default='asymmetric_loss',help='loss metric, options: [cross_entropy, asymmetric_loss]')
     parser.add_argument('--init_lr','-r',type = float, default=2e-2,help='initial learning rate of model')
     parser.add_argument('--device', type=str,default='cuda:0',help='training on cpu or gpu')
-    parser.add_argument('--pretrain_path', type=str,default=r'weights\in\data10000_100epoch\bestmodel.pth',help='pretrain weight')
+    parser.add_argument('--pretrain_path', type=str,default=r'',help='pretrain weight')
     parser.add_argument('--model', type=str,default='in_unet',help='models, option: in_unet')
-    parser.add_argument('--normalize', action="store_true",default=True, help='model normalize layer exist or not')
+    parser.add_argument('--pad_mode', action="store_true",default=False, help='unet used crop or pad at skip connection')
+    parser.add_argument('--normalize', action="store_true",dest="is_normalize",default=True, help='model normalize layer exist or not')
     parser.add_argument('--styleloss', action="store_true",default=True, help='using style loss during training')
-    parser.add_argument('--fix_encoder', action="store_true",default=True, help='fix encoder')
+    parser.add_argument('--fix_encoder', action="store_true",default=False, help='fix encoder')
     parser.add_argument('--pair_style', action="store_true",default=True, help='if True then choose a paired style img using cyclegan, or random choose a style img from target domain')
     parser.add_argument('--sup_loss_w',type = float, default=1.0,help='weight of supervise loss')
     parser.add_argument('--style_loss_w',type = float, default=1.0,help='weight of style loss')
@@ -65,7 +65,7 @@ def main():
     logger.addHandler(ch)
     logger.addHandler(fh)
     ###################################################
-    net = get_models(model_name=args.model,is_normalize=args.normalize, is_cls=True,args=args)
+    net = get_models(model_name=args.model, is_cls=True,args=args)
     net.freeze_encoder(is_freeze=args.fix_encoder)
     
     if args.pretrain_path:
@@ -136,9 +136,8 @@ def training(net,
         # adjust the learning rate
         lr = cosine_decay_with_warmup(current_iter=i,total_iter=args.total_epoch,warmup_iter=args.warmup_epoch,base_lr=args.init_lr)
         adjust_lr(optimizer,lr)
-
+        count = 0
         for imgs, truthes, style_imgs in tqdm(train_loader):
-
             imgs = imgs.to(dtype=torch.float32, device = device)
             truthes = truthes.to(device = device)
             style_imgs = style_imgs.to(dtype=torch.float32, device = device)
@@ -154,6 +153,7 @@ def training(net,
             optimizer.zero_grad()
             total_loss.backward()
             optimizer.step()
+            count+=1
 
         logging.info(f'total loss: {(sup_loss+style_loss):6.4f}, supervise loss: {sup_loss:6.4f}, style loss: {style_loss:6.4f} at epoch {i}.')
         epoch_losses["superviseLoss"].append(sup_loss)
