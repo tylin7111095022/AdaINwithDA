@@ -91,3 +91,63 @@ class Distribution_loss(torch.nn.Module):
             self.metric = metric
         else:
             raise NotImplementedError(f"the loss metric has not implemented. metric name must be in kl_divergence or cross_entropy")
+        
+def _calculate_means(pred, gt, n_objects:list):
+    """pred: bs, n_filters, height, width
+       gt: bs, n_instances, height, width
+       n_objects 每張圖片內有幾個物件"""
+    assert pred.size(0) == gt.size(0)
+    assert pred.size(0) == len(n_objects)
+    feat_size = pred.size()
+    n_instances = gt.size(1)
+
+    pred_repeated = pred.unsqueeze(2).expand(
+        feat_size[0], feat_size[1], n_instances, feat_size[2],feat_size[3])  # bs, n_filters, n_instances, h, w
+    
+    gt_expanded = gt.unsqueeze(1) # bs, 1 , n_instances, h, w
+
+    pred_masked = pred_repeated * gt_expanded
+
+    means = []
+    for i in range(feat_size[0]):
+        _n_objects_sample = n_objects[i]
+        
+        _pred_masked_sample = pred_masked[i, :, : _n_objects_sample] # n_filters, n_instances, h, w
+        _gt_expanded_sample = gt_expanded[i, :, : _n_objects_sample] # 1 , n_instances, h, w
+        _mean_sample = _pred_masked_sample.sum([2,3]) / _gt_expanded_sample.sum([2,3])  # n_filters, n_instances
+        
+        means.append(_mean_sample)
+    if len(means) == 1:
+        means = means[0].unsqueeze(0) # 1, n_filters, n_instances
+    else:
+        means = torch.stack(means,dim=0) #
+
+    return means
+
+
+def calculate_variance_term(pred, gt, n_objects, delta_v:float=0.5, norm=2):
+    """pred: bs, n_filters(channel), height, width
+       gt: bs, n_instances(channel), height, width"""
+    assert pred.size(0) == gt.size(0)
+    assert pred.size(0) == len(n_objects)
+    
+    feat_size = pred.size()
+    n_instances = gt.size(1)
+    means = _calculate_means(pred, gt, n_objects) # bs, n_filters, n_instances
+
+    means = means.unsqueeze(3).unsqueeze(4).expand(feat_size[0], feat_size[1], n_instances, feat_size[2],feat_size[3]) # bs, n_filters, n_instances, height, width
+    pred = pred.unsqueeze(2).expand(feat_size[0], feat_size[1], n_instances, feat_size[2],feat_size[3])# bs, n_filters, n_instances, height, width
+    gt = gt.unsqueeze(1).expand(feat_size[0], feat_size[1], n_instances, feat_size[2],feat_size[3])# bs, n_filters, n_instances, height, width
+
+    _var = (torch.clamp(torch.norm((pred - means), norm, 1) -
+                        delta_v, min=0.0) ** 2) * gt[:,0, :, :, :] # bs, n_instances, height, width
+
+    var_term = 0.0
+    for i in range(feat_size[0]):
+        _var_sample = _var[i, :n_objects[i]]  # n_instances, height, width
+        _gt_sample = gt[i, 0, :n_objects[i]]  # n_instances, height, width
+
+        var_term += torch.sum(_var_sample) / torch.sum(_gt_sample)
+    var_term = var_term / feat_size[0]
+
+    return var_term

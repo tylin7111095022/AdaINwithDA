@@ -6,12 +6,13 @@ import torch
 import torch.nn as nn
 
 class InstanceNormalization_UNet(nn.Module):
-    def __init__(self, n_channels, n_classes, is_normalize:bool, bilinear=False, is_cls:bool=True,pad_mode:bool=True):
+    def __init__(self, n_channels, n_classes, is_normalize:bool, bilinear=False, is_cls:bool=True,instance_branch:bool=False,pad_mode:bool=True):
         super(InstanceNormalization_UNet, self).__init__()
         self.n_channels = n_channels
         self.n_classes = n_classes
         self.bilinear = bilinear
         self.is_cls = is_cls
+        self.instance_branch = instance_branch
         self.pad_mode = pad_mode
         self.is_styleLoss = True
         self.is_normalize = is_normalize
@@ -20,7 +21,11 @@ class InstanceNormalization_UNet(nn.Module):
         self.mse_loss = nn.MSELoss() # calculate style loss
 
         self.encoder = Encoder(n_channels, n_layers=4,is_normalize=is_normalize)
-        self.decoder = Decoder(n_classes=n_classes,n_layers=4,is_normalize=is_normalize,pad_mode=self.pad_mode,bilinear=bilinear,is_cls=is_cls)
+        self.decoder = Decoder(n_classes=n_classes,n_layers=4,is_normalize=is_normalize,pad_mode=self.pad_mode,bilinear=bilinear,is_cls=False)
+        if self.is_cls:
+            self.semantic_seg_head = OutConv(64, n_classes)
+        if self.instance_branch:
+            self.instanace_seg_head = OutConv(64, 16) # every pixel represented by 16 channel
 
     def forward(self, x, style):
         code = self.encoder(x)
@@ -36,6 +41,11 @@ class InstanceNormalization_UNet(nn.Module):
         code = adain(content_feat=code,style_feat=style_code)
         logits = self.decoder(code, align_encoder_fs)
         decoder_fs = self.decoder.features
+        pixel_embedding = torch.zeros(1).to(device=self.dummy_param.device)
+        if self.instance_branch:
+            pixel_embedding = self.instanace_seg_head(logits)
+        if self.is_cls:
+            logits = self.semantic_seg_head(logits)
 
         styleloss = torch.zeros(1).to(device=self.dummy_param.device)
         if self.is_styleLoss:
@@ -49,13 +59,16 @@ class InstanceNormalization_UNet(nn.Module):
             diffY = torch.tensor([x.shape[2] - logits.size()[2]])
             diffX = torch.tensor([x.shape[3] - logits.size()[3]])
             logits = F.pad(logits, [diffX // 2, diffX - diffX // 2, diffY // 2, diffY - diffY // 2],mode="replicate")
+            pixel_embedding = F.pad(pixel_embedding, [diffX // 2, diffX - diffX // 2, diffY // 2, diffY - diffY // 2],mode="replicate")
 
-        return logits, styleloss
+        return logits, pixel_embedding, styleloss
     
     def targetDomainPredict(self, x):
         code = self.encoder(x)
         fs = self.encoder.features
         logits = self.decoder(code, fs)
+        if self.is_cls:
+            logits = self.semantic_seg_head(logits)
         if not self.pad_mode:
             diffY = torch.tensor([x.shape[2] - logits.size()[2]])
             diffX = torch.tensor([x.shape[3] - logits.size()[3]])
