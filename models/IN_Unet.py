@@ -47,9 +47,9 @@ class InstanceNormalization_UNet(nn.Module):
         if self.is_cls:
             logits = self.semantic_seg_head(logits)
 
-        styleloss = torch.zeros(1).to(device=self.dummy_param.device)
         if self.is_styleLoss:
             assert len(align_encoder_fs) == len(decoder_fs)
+            styleloss = torch.zeros(1).to(device=self.dummy_param.device)
             for i in range(len(decoder_fs)):
                 ef = align_encoder_fs[i]
                 df = decoder_fs[-(i+1)]
