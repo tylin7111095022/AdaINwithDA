@@ -5,6 +5,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import warnings
+import math
 warnings.filterwarnings("ignore")
 
 #custom module
@@ -17,7 +18,7 @@ dir_content = r'data\real_A' #訓練集的圖片所在路徑 榮總圖片
 dir_truth = r'data\train_mask' #訓練集的真實label所在路徑
 dir_style = r'data\fake_B' 
 
-dir_checkpoint = r'log\train18_adain_ASLandSLandIL_fixencoder_pretrain_cropunet' #儲存模型的權重檔所在路徑
+dir_checkpoint = r'log\train19_adain_ASLandSLandIL_fixencoder_pretrain_cropunet_no_autoadjust' #儲存模型的權重檔所在路徑
 
 os.makedirs(dir_checkpoint,exist_ok=False)
 
@@ -31,6 +32,7 @@ def get_args():
     parser.add_argument('--loss', type=str,default='asymmetric_loss',help='loss metric, options: [cross_entropy, asymmetric_loss]')
     parser.add_argument('--styleloss', action="store_true",default=True, help='using style loss during training')
     parser.add_argument('--instanceloss', action="store_true",default=True, help='using instance seg loss during training')
+    parser.add_argument('--autoadapt-lossweight', action="store_true",dest="autoAdapt",default=False, help='if True autoadapt weight of losses')
     parser.add_argument('--init_lr','-r',type = float, default=2e-2,help='initial learning rate of model')
     parser.add_argument('--device', type=str,default='cuda:0',help='training on cpu or gpu')
     parser.add_argument('--pretrain_path', type=str,default=r'weights\in\data10000_100epoch\bestmodel.pth',help='pretrain weight')
@@ -167,12 +169,16 @@ def training(net,
             if args.instanceloss:
                 losses.append(instanceloss)
 
-            weighted_loss = calc_multiloss(losses=losses,log_vars=log_vars,device=device)
+            if args.autoAdapt:
+                weighted_loss = calc_multiloss(losses=losses,log_vars=log_vars,device=device)
+            else:
+                weighted_loss = sum(losses)
             optimizer.zero_grad()
             weighted_loss.backward()
             optimizer.step()
 
         logging.info(f'before weighted loss: {(sup_loss+style_loss+instance_loss):6.4f}, supervise loss: {sup_loss:6.4f}, style loss: {style_loss:6.4f}, instance loss: {instance_loss:6.4f} at epoch {i}.')
+        logging.info(f"weight of loss{[math.exp(-v.detach().item()) for v in log_vars]}")
         epoch_losses["superviseLoss"].append(sup_loss)
         epoch_losses["styleLoss"].append(style_loss)
         epoch_losses["instanceLoss"].append(instance_loss)

@@ -4,6 +4,8 @@
 import torch.nn.functional as F
 import torch
 import torch.nn as nn
+import numpy as np
+from sklearn.cluster import KMeans
 
 class InstanceNormalization_UNet(nn.Module):
     def __init__(self, n_channels, n_classes, is_normalize:bool, bilinear=False, is_cls:bool=True,instance_branch:bool=False,pad_mode:bool=True):
@@ -63,18 +65,57 @@ class InstanceNormalization_UNet(nn.Module):
 
         return logits, pixel_embedding, styleloss
     
-    def targetDomainPredict(self, x):
+    def targetDomainPredict(self, x, delta_v:float=0.5):
         code = self.encoder(x)
         fs = self.encoder.features
         logits = self.decoder(code, fs)
-        if self.is_cls:
-            logits = self.semantic_seg_head(logits)
+        sample_list = [logits[i] for i in range(logits.shape[0])] # [(c,h,w), (c,h,w)]
+        means = []
+        semantic_masks = []
+        embeddings = []
+
+        for logit in sample_list:
+            if self.is_cls:
+                probs = torch.softmax(self.semantic_seg_head(logit.unsqueeze(0)),dim=1)
+                semantic_mask = torch.argmax(probs,dim=1).squeeze(0) # 去掉batch軸
+                semantic_mask = semantic_mask.unsqueeze(0).to(torch.uint8) # 加入channel軸 (1,h,w)
+                semantic_masks.append(semantic_mask)
+
+            if self.instance_branch:
+                embedding = self.instanace_seg_head(logit.unsqueeze(0)).squeeze(0) # (c,h,w)
+                embeddings.append(embedding)
+                # embedding = embedding.transpose(1, 2, 0)  # h, w, c
+                # embedding = np.stack([embedding[:, :, i][semantic_mask != 0]for i in range(embedding.shape[2])], axis=1) # (pixel_loc, c)
+                # labels = KMeans(n_clusters=2, max_iter=500).fit_predict(embedding.squeeze(0))
+            n_fg_pixel = torch.sum((semantic_mask != 0).to(torch.uint8))
+            fg_mask = semantic_mask.repeat(embedding.shape[0],1,1) != 0
+            embedding = torch.where(fg_mask,embedding,0)
+
+            mean = torch.sum(embedding,dim=(1,2)) / n_fg_pixel
+            means.append(mean)
+            # fg_coords = torch.where(semantic_mask != 0) # 返回符合condition 的座標
+            # y_coords = fg_coords[0]
+            # x_coords = fg_coords[1]
+
+        means = torch.stack(means,dim=0).unsqueeze(2).unsqueeze(3) # (b, c, 1, 1)
+        semantic_masks = torch.stack(semantic_masks,dim=0) # (b,1,h,w)
+        fg_masks = (semantic_masks != 0) # (b,1,h,w)
+        embeddings = torch.stack(embeddings,dim=0) # (b,c,h,w)
+
+        diff_mean = torch.norm((embeddings - means), p=2, dim=1) # (b,h,w)
+        # print(f"distance with mean: {torch.min(diff_mean)} ~ {torch.max(diff_mean)}")
+        instance_fg_mask = diff_mean.unsqueeze(1) <= delta_v # (b,1,h,w)
+
+        fg_masks = (fg_masks & instance_fg_mask)
+        semantic_masks = torch.where(fg_masks,semantic_masks,0)
+            
         if not self.pad_mode:
             diffY = torch.tensor([x.shape[2] - logits.size()[2]])
             diffX = torch.tensor([x.shape[3] - logits.size()[3]])
             logits = F.pad(logits, [diffX // 2, diffX - diffX // 2, diffY // 2, diffY - diffY // 2],mode="replicate")
+            semantic_masks = F.pad(semantic_masks, [diffX // 2, diffX - diffX // 2, diffY // 2, diffY - diffY // 2],mode="constant",value=0)
 
-        return logits
+        return logits, semantic_masks
     
     def calc_style_loss(self, feature, style_feature):
         # assert (feature.size() == style_feature.size())
