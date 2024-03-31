@@ -4,8 +4,11 @@
 import torch.nn.functional as F
 import torch
 import torch.nn as nn
-import numpy as np
-from sklearn.cluster import KMeans
+# from tsnecuda import TSNE
+from sklearn.manifold import TSNE
+from matplotlib import pyplot as plt
+# import numpy as np
+# from sklearn.cluster import KMeans
 
 class InstanceNormalization_UNet(nn.Module):
     def __init__(self, n_channels, n_classes, is_normalize:bool, bilinear=False, is_cls:bool=True,instance_branch:bool=False,pad_mode:bool=True):
@@ -27,7 +30,9 @@ class InstanceNormalization_UNet(nn.Module):
         if self.is_cls:
             self.semantic_seg_head = OutConv(64, n_classes)
         if self.instance_branch:
-            self.instanace_seg_head = OutConv(64, 16) # every pixel represented by 16 channel
+            self.instanace_seg_head = OutConv(64, 32) # every pixel represented by 32 channel
+        else:
+            self.instanace_seg_head = nn.Identity()
 
     def forward(self, x, style):
         code = self.encoder(x)
@@ -43,15 +48,15 @@ class InstanceNormalization_UNet(nn.Module):
         code = adain(content_feat=code,style_feat=style_code)
         logits = self.decoder(code, align_encoder_fs)
         decoder_fs = self.decoder.features
-        pixel_embedding = torch.zeros(1).to(device=self.dummy_param.device)
-        if self.instance_branch:
-            pixel_embedding = self.instanace_seg_head(logits)
+        pixel_embedding = self.instanace_seg_head(logits)
+
         if self.is_cls:
             logits = self.semantic_seg_head(logits)
 
+        # style loss
+        styleloss = torch.zeros(1).to(device=self.dummy_param.device)
         if self.is_styleLoss:
             assert len(align_encoder_fs) == len(decoder_fs)
-            styleloss = torch.zeros(1).to(device=self.dummy_param.device)
             for i in range(len(decoder_fs)):
                 ef = align_encoder_fs[i]
                 df = decoder_fs[-(i+1)]
@@ -65,7 +70,7 @@ class InstanceNormalization_UNet(nn.Module):
 
         return logits, pixel_embedding, styleloss
     
-    def targetDomainPredict(self, x, delta_v:float=0.5):
+    def targetDomainPredict(self, x, delta_v:float=1, tsne:bool=False):
         code = self.encoder(x)
         fs = self.encoder.features
         logits = self.decoder(code, fs)
@@ -73,6 +78,7 @@ class InstanceNormalization_UNet(nn.Module):
         means = []
         semantic_masks = []
         embeddings = []
+        tsne_embeddings = []
 
         for logit in sample_list:
             if self.is_cls:
@@ -81,24 +87,24 @@ class InstanceNormalization_UNet(nn.Module):
                 semantic_mask = semantic_mask.unsqueeze(0).to(torch.uint8) # 加入channel軸 (1,h,w)
                 semantic_masks.append(semantic_mask)
 
-            if self.instance_branch:
-                embedding = self.instanace_seg_head(logit.unsqueeze(0)).squeeze(0) # (c,h,w)
-                embeddings.append(embedding)
-                # embedding = embedding.transpose(1, 2, 0)  # h, w, c
-                # embedding = np.stack([embedding[:, :, i][semantic_mask != 0]for i in range(embedding.shape[2])], axis=1) # (pixel_loc, c)
-                # labels = KMeans(n_clusters=2, max_iter=500).fit_predict(embedding.squeeze(0))
+            # if self.instance_branch:
+            embedding = self.instanace_seg_head(logit.unsqueeze(0)).squeeze(0) # (c,h,w)
+            _,h,w = embedding.size()
+
+            vis_embedding = embedding.reshape(embedding.size(0),-1).permute(1,0).detach().cpu().numpy()
+                
+            embeddings.append(embedding)
+                
             n_fg_pixel = torch.sum((semantic_mask != 0).to(torch.uint8))
             fg_mask = semantic_mask.repeat(embedding.shape[0],1,1) != 0
             embedding = torch.where(fg_mask,embedding,0)
 
             mean = torch.sum(embedding,dim=(1,2)) / n_fg_pixel
             means.append(mean)
-            # fg_coords = torch.where(semantic_mask != 0) # 返回符合condition 的座標
-            # y_coords = fg_coords[0]
-            # x_coords = fg_coords[1]
 
         means = torch.stack(means,dim=0).unsqueeze(2).unsqueeze(3) # (b, c, 1, 1)
         semantic_masks = torch.stack(semantic_masks,dim=0) # (b,1,h,w)
+        
         fg_masks = (semantic_masks != 0) # (b,1,h,w)
         embeddings = torch.stack(embeddings,dim=0) # (b,c,h,w)
 
@@ -106,8 +112,15 @@ class InstanceNormalization_UNet(nn.Module):
         # print(f"distance with mean: {torch.min(diff_mean)} ~ {torch.max(diff_mean)}")
         instance_fg_mask = diff_mean.unsqueeze(1) <= delta_v # (b,1,h,w)
 
-        fg_masks = (fg_masks & instance_fg_mask)
-        semantic_masks = torch.where(fg_masks,semantic_masks,0)
+        if tsne:
+            X_embedded = TSNE(n_components=2, perplexity=15, learning_rate=10).fit_transform(vis_embedding)
+            X_embedded = torch.from_numpy(X_embedded).permute(1,0).reshape(-1,h,w) # (2 ,h,w)
+            tsne_embeddings.append(X_embedded)
+            tsne_embeddings = torch.stack(tsne_embeddings,dim=0) # (b,2,h,w)
+            self.tsne(tsne_embeddings=tsne_embeddings.squeeze(),instance_fg_mask=instance_fg_mask.squeeze())
+
+        masks = (fg_masks & instance_fg_mask)
+        semantic_masks = torch.where(masks,semantic_masks ,0)
             
         if not self.pad_mode:
             diffY = torch.tensor([x.shape[2] - logits.size()[2]])
@@ -133,6 +146,23 @@ class InstanceNormalization_UNet(nn.Module):
         for name, p in self.encoder.named_parameters():
             p.requires_grad = not is_freeze
             # print(f"{name}: {p.requires_grad}")
+
+    def tsne(self, tsne_embeddings, instance_fg_mask):
+        """tsne_embeddings: (2.h,w)
+        instance_fg_mask: (h,w)"""
+        fig = plt.figure(figsize=(8, 5))
+
+        # print(tsne_embeddings[instance_fg_mask].shape)
+        # print(tsne_embeddings[~instance_fg_mask].shape)
+        fg_y, fg_x = torch.where(instance_fg_mask)
+        bg_y, bg_x = torch.where(~instance_fg_mask)
+        # fg_points = tsne_embeddings[instance_fg_mask].reshape(-1,2)
+        # bg_points = tsne_embeddings[~instance_fg_mask].reshape(-1,2)
+        plt.scatter(tsne_embeddings[0,fg_y,fg_x], tsne_embeddings[1,fg_y,fg_x], c="r", label="fg",alpha=0.5)
+        plt.scatter(tsne_embeddings[0,bg_y,bg_x], tsne_embeddings[1,bg_y,bg_x], c="b", label="bg",alpha=0.2)
+        plt.legend()
+        fig.savefig("tsne.png")
+        # plt.show()
     
 class Encoder(nn.Module):
     def __init__(self, n_channels, n_layers, is_normalize:bool):

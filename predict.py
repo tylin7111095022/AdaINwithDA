@@ -8,25 +8,27 @@ from PIL import Image
 warnings.filterwarnings("ignore")
 from tqdm import tqdm
 import threading
-
 #custom
 from models import get_models
 from dataset import GrayDataset
 from metric import compute_mIoU, dice_score
 from utils import Plotter
 
-test_img_dir = r"data\chang_val_1\images"
-test_truth_dir = r"data\chang_val_1\masks"
+
+# test_img_dir = r"D:\tsungyu\chromosome_data\chang\changValSum\images"
+# test_truth_dir = r"D:\tsungyu\chromosome_data\chang\changValSum\masks"
+test_img_dir = r"D:\tsungyu\chromosome_data\chang\chang_val_4\images"
+test_truth_dir = r"D:\tsungyu\chromosome_data\chang\chang_val_4\masks"
 
 def get_args():
     parser = argparse.ArgumentParser(description='Predict masks from input images')
     parser.add_argument('--model', type=str,default='in_unet',help='models, option: bn_unet, in_unet')
     parser.add_argument('--in_channel','-i',type=int, default=1,help="channels of input images")
     parser.add_argument('--classes','-c',type=int,default=2,help='Number of classes')
-    parser.add_argument('--weight', '-w', default=r'log\train18_adain_ASLandSLandIL_fixencoder_pretrain_cropunet\unet_50.pth', metavar='FILE',help='Specify the file in which the model is stored')
-    parser.add_argument('--normalize', action="store_true",dest="is_normalize",default=True, help='model normalize layer exist or not')
-    parser.add_argument('--pad_mode', action="store_true",default=True, help='unet used crop or pad at skip connection')
     parser.add_argument('--instanceloss', action="store_true",default=True, help='using instance seg loss during training')
+    parser.add_argument('--weight', '-w', default=r'log\ASL_varianceLoss\unet_50.pth', metavar='FILE',help='Specify the file in which the model is stored')
+    parser.add_argument('--normalize', action="store_true",dest="is_normalize",default=True, help='model normalize layer exist or not')
+    parser.add_argument('--pad_mode', action="store_true",default=False, help='unet used crop or pad at skip connection')
     parser.add_argument('--imgpath', '-img',type=str,default=r'', help='the path of img')
     parser.add_argument('--imgdir', type=str,default=r'', help='the path of directory which imgs saved for predicting')
     parser.add_argument('--outdir', type=str,default=r'testchromosome', help='directory where saved predict imgs')
@@ -67,7 +69,7 @@ def predict_mask(net,imgpath:str, plot_ent:bool, outdir:str = "./"):
     img = torch.from_numpy(cv2.imread(imgpath,cv2.IMREAD_GRAYSCALE)).unsqueeze(2).permute(2,0,1)
     img = img.unsqueeze(0)#加入批次軸
     img = img.to(dtype=torch.float32, device='cpu')
-    logit, mask_pred = net.targetDomainPredict(img)
+    logit, mask_pred = net.targetDomainPredict(img,tsne=True)
     if plot_ent:
         plotter.plot_entropy(torch.softmax(logit, dim=1),saved=True,is_heat=True, imgname=os.path.basename(imgpath).split(".")[0])
     mask_pred = mask_pred.squeeze().numpy()

@@ -10,15 +10,15 @@ warnings.filterwarnings("ignore")
 
 #custom module
 from models import get_models
-from models.losses import Distribution_loss, calculate_variance_term
+from models.losses import Distribution_loss, calculate_variance_loss
 from dataset import AdainDataset
 from utils import adjust_lr, cosine_decay_with_warmup
 
 dir_content = r'data\real_A' #訓練集的圖片所在路徑 榮總圖片
-dir_truth = r'data\train_mask' #訓練集的真實label所在路徑
+dir_truth = r'data\real_A_masks' #訓練集的真實label所在路徑
 dir_style = r'data\fake_B' 
 
-dir_checkpoint = r'log\train19_adain_ASLandSLandIL_fixencoder_pretrain_cropunet_no_autoadjust' #儲存模型的權重檔所在路徑
+dir_checkpoint = r'log\ASL_varianceLoss' #儲存模型的權重檔所在路徑
 
 os.makedirs(dir_checkpoint,exist_ok=False)
 
@@ -29,8 +29,8 @@ def get_args():
     parser.add_argument('--warmup_epoch',type=int,default=0,help='warm up the student model')
     parser.add_argument('--batch','-b',type=int,dest='batch_size',default=1, help='Batch size')
     parser.add_argument('--classes','-c',type=int,default=2,help='Number of classes')
-    parser.add_argument('--loss', type=str,default='asymmetric_loss',help='loss metric, options: [cross_entropy, asymmetric_loss]')
-    parser.add_argument('--styleloss', action="store_true",default=True, help='using style loss during training')
+    parser.add_argument('--loss', type=str,choices=["cross_entropy", "asymmetric_loss"],default='asymmetric_loss',help='loss metric, options: [cross_entropy, asymmetric_loss]')
+    parser.add_argument('--styleloss', action="store_true",default=False, help='using style loss during training')
     parser.add_argument('--instanceloss', action="store_true",default=True, help='using instance seg loss during training')
     parser.add_argument('--autoadapt-lossweight', action="store_true",dest="autoAdapt",default=False, help='if True autoadapt weight of losses')
     parser.add_argument('--init_lr','-r',type = float, default=2e-2,help='initial learning rate of model')
@@ -68,7 +68,7 @@ def main():
     ###################################################
     net = get_models(model_name=args.model, is_cls=True,args=args)
     net.freeze_encoder(is_freeze=args.fix_encoder)
-    # log_vars = [torch.zeros((1,), requires_grad=True) for i in range(args.n_losses)]
+
     log_vars = [torch.zeros((1,), requires_grad=True)]
     if args.styleloss:
         log_vars.append(torch.zeros((1,), requires_grad=True))
@@ -76,7 +76,10 @@ def main():
         log_vars.append(torch.zeros((1,), requires_grad=True))
 
     # get all parameters (model parameters + task dependent log variances)
-    params = (list(net.parameters()) + log_vars)
+    if args.autoAdapt:
+        params = list(net.parameters()) + log_vars
+    else:
+        params = list(net.parameters())
     
     if args.pretrain_path:
         pretrained_model_param_dict = torch.load(args.pretrain_path)
@@ -156,23 +159,23 @@ def training(net,
             logits, pixel_embe, styleloss = net(imgs,style_imgs)
 
             n_objects = [1 for i in range(logits.size(0))]
-            instanceloss = calculate_variance_term(pixel_embe,truthes,n_objects) if args.instanceloss else torch.zeros(1,device=device)
+            instanceloss = calculate_variance_loss(pixel_embe,truthes,n_objects) if args.instanceloss else torch.zeros(1,device=device)
             superviseloss = loss_fn(logits, truthes)
 
             sup_loss += superviseloss.item()
             style_loss += styleloss.item()
             instance_loss += instanceloss.item()
 
-            losses = [superviseloss]
-            if args.styleloss:
-                losses.append(styleloss)
-            if args.instanceloss:
-                losses.append(instanceloss)
 
             if args.autoAdapt:
+                losses = [superviseloss]
+                if args.styleloss:
+                    losses.append(styleloss)
+                if args.instanceloss:
+                    losses.append(instanceloss)
                 weighted_loss = calc_multiloss(losses=losses,log_vars=log_vars,device=device)
             else:
-                weighted_loss = sum(losses)
+                weighted_loss = styleloss + superviseloss + instanceloss
             optimizer.zero_grad()
             weighted_loss.backward()
             optimizer.step()
