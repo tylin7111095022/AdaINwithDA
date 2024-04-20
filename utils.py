@@ -4,6 +4,134 @@ import cv2
 import os
 import numpy as np
 import json
+import torch.nn as nn
+from typing import Optional
+    
+class GradCam(object):
+    def __init__(self, model:nn.Module, gradCamLayer:Optional[list]=None):
+        self.model = model
+        self.targetLayers = gradCamLayer
+        self.activationAndGrads = ActivationandGradients(model,gradCamLayer)
+        self.device = next(self.model.parameters()).device
+
+    def forwardandBackward(self, x, class_ndx:int):
+        self.model.zero_grad()
+        logits, masks = self.activationAndGrads(x)
+        prob = torch.softmax(logits,dim=1)
+        totalscore = torch.sum(prob[:,class_ndx,:,:] * masks)
+        totalscore.backward()
+        return
+
+    def mode(self,mode:str):
+        if mode == "train":
+            self.model.train()
+        elif mode == "eval":
+            self.model.eval()
+        else:
+            print("Error, mode should be train or eval !!!, mode is eval now.")
+            self.model.eval()
+
+    def to(self, device:str):
+        self.model.to(device=device)
+        self.device = next(self.model.parameters()).device
+
+    def load_weights(self, weights):
+        model_dict = self.model.state_dict()
+        pretrained_w_dict = torch.load(weights)
+        weights_dict = {k:v for k, v in pretrained_w_dict.items() if k in model_dict }
+        self.model.load_state_dict(weights_dict)
+    
+    def get_cam_images(self,x, class_ndx:int):
+        x = x.to(self.device,dtype=torch.float32)
+        self.forwardandBackward(x,class_ndx)
+        target_size = (x.shape[-2], x.shape[-1])
+        cam_per_target_layer = []
+        weights = []
+        cams = []
+        # get cam weights
+        for grad in self.activationAndGrads.gradients:
+            weight = torch.mean(grad, dim=(2,3))
+            weights.append(weight)
+        # get cam activations
+        activations = self.activationAndGrads.activations
+        # print(f"activations: {activations}")
+        for w, a in zip(weights, activations):
+            weighted_activations = w[:, :, None, None] * a
+            cam = torch.sum(weighted_activations,dim=1)
+            cam = torch.where(cam > 0., cam, 0.)  # relu, cam shape: [b,h,w]
+            cams.append(cam)
+        for cam in cams:
+            scaled_cam = self._scale_cam_image(cam, target_size)
+            cam_per_target_layer.append(scaled_cam[:,None,:,:]) # insert channel axis shape: [b,1,h,w]
+
+        return cam_per_target_layer
+
+    def _scale_cam_image(self, cams, target_size=None):
+        result = []
+        for img in cams: # img shape [h,w]
+            img = img - torch.min(img)
+            img = img / (1e-7 + torch.max(img)) # normalize
+            img_a = img.numpy()
+            if target_size is not None:
+                img = cv2.resize(img_a, target_size)
+            result.append(img)
+        result = np.stack(result,axis=0)
+        result = np.float32(result) # result shape [b,h,w]
+
+        return result
+    
+    def plot_cams(self, imgpath, class_ndx:int):
+        name = os.path.basename(imgpath).split(".")[0]
+        img_a = cv2.imread(imgpath,cv2.IMREAD_GRAYSCALE)
+        img_t = torch.from_numpy(img_a)[None, None,:,:] # 1,1,h,w
+        cams_per_target = self.get_cam_images(img_t,class_ndx)
+        for i, cam in enumerate(cams_per_target):
+            cam = cam.squeeze() # remove one dimension
+            heatmap = np.uint8(255 * cam)
+            heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+            superimposed_img = heatmap * 0.4 + img_a[:,:,None]
+            cv2.imwrite(f'{name}_class{class_ndx}_{i}_gradcam.jpg', superimposed_img)
+
+    
+# ref: https://github.com/jacobgil/pytorch-grad-cam/tree/master
+class ActivationandGradients(object):
+    def __init__(self, model, targetLayer:list):
+        self.model = model
+        self.targetLayer = targetLayer
+        self.gradients = []
+        self.activations = []
+        self.handles = []
+
+        for target in targetLayer:
+            h_a = target.register_forward_hook(self.get_activations)
+            print(h_a)
+            h_g = target.register_forward_hook(self.get_gradients)
+            self.handles.append(h_a)
+            self.handles.append(h_g)
+
+    def get_activations(self, module, input, output):
+        activation = output
+        self.activations.append(activation.cpu().detach())
+
+    def get_gradients(self, module, input, output):
+        if not hasattr(output, "requires_grad") or not output.requires_grad:
+            # You can only register hooks on tensor requires grad.
+            return
+        # Gradients are computed in reverse order
+        def _store_grad(grad):
+            self.gradients = [grad.cpu().detach()] + self.gradients
+
+        output.register_hook(_store_grad)
+
+    def __call__(self, x):
+        # initial gradients and activations
+        self.gradients = []
+        self.activations = []
+        return self.model.targetDomainPredict(x)
+
+    def release(self):
+        for handle in self.handles:
+            handle.remove()
 
 class Plotter(object):
     def __init__(self):

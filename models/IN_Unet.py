@@ -72,23 +72,26 @@ class InstanceNormalization_UNet(nn.Module):
     
     def targetDomainPredict(self, x, delta_v:float=1, tsne:bool=False):
         code = self.encoder(x)
-        fs = self.encoder.features
-        logits = self.decoder(code, fs)
+        encoder_fs = self.encoder.features
+        fs = self.decoder(code, encoder_fs)
+        if self.is_cls:
+            logits = self.semantic_seg_head(fs)
         sample_list = [logits[i] for i in range(logits.shape[0])] # [(c,h,w), (c,h,w)]
+        f_list = [fs[i] for i in range(fs.shape[0])] # [(c,h,w), (c,h,w)]
         means = []
         semantic_masks = []
         embeddings = []
         tsne_embeddings = []
 
-        for logit in sample_list:
+        for logit,f in zip(sample_list,f_list):
             if self.is_cls:
-                probs = torch.softmax(self.semantic_seg_head(logit.unsqueeze(0)),dim=1)
+                probs = torch.softmax(logit.unsqueeze(0),dim=1)
                 semantic_mask = torch.argmax(probs,dim=1).squeeze(0) # 去掉batch軸
                 semantic_mask = semantic_mask.unsqueeze(0).to(torch.uint8) # 加入channel軸 (1,h,w)
                 semantic_masks.append(semantic_mask)
 
             # if self.instance_branch:
-            embedding = self.instanace_seg_head(logit.unsqueeze(0)).squeeze(0) # (c,h,w)
+            embedding = self.instanace_seg_head(f.unsqueeze(0)).squeeze(0) # (c,h,w)
             _,h,w = embedding.size()
 
             vis_embedding = embedding.reshape(embedding.size(0),-1).permute(1,0).detach().cpu().numpy()
@@ -342,4 +345,6 @@ def adain(content_feat, style_feat):
 if __name__ == '__main__':
     net = InstanceNormalization_UNet(n_channels=1, n_classes=2,is_normalize=True)
     net.freeze_encoder(is_freeze=True)
+    # print(net)
+    print(net.decoder.layers[-1])
     
